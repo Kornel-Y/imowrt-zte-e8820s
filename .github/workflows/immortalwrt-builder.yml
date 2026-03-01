@@ -85,7 +85,7 @@ jobs:
 
       - name: Load .config
         run: |
-          cp $GITHUB_WORKSPACE/config/e8820s.config /workdir/immortalwrt/.config
+          cp $GITHUB_WORKSPACE/config/official.config /workdir/immortalwrt/.config
 
       - name: Download packages
         working-directory: /workdir/immortalwrt
