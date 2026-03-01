@@ -1,0 +1,130 @@
+name: ImmortalWrt Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_version:
+        description: "tag"
+        required: true
+        default: "v24.10.5"
+        type: string
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@main
+
+      - name: Init environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo docker image prune --all --force
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils \
+            bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex \
+            gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool \
+            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip \
+            p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl \
+            unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
+
+      - name: Clone ImmortalWrt
+        working-directory: /workdir
+        run: |
+          git clone $REPO_URL immortalwrt
+          cd immortalwrt
+          if [ "${{ github.event.inputs.tag_version }}" != "snapshot" ]; then
+            git checkout ${{ github.event.inputs.tag_version }}
+          fi
+          ln -sf /workdir/immortalwrt $GITHUB_WORKSPACE/immortalwrt
+
+      - name: Clone external packages
+        working-directory: /workdir/immortalwrt
+        run: |
+          git clone https://github.com/destan19/OpenAppFilter package/extra/openappfilter
+          git clone https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community package/extra/luci-app-tailscale-community
+
+      - name: Copy device tree
+        run: |
+          cp $GITHUB_WORKSPACE/patch/mt7621_zte_e8820s.dts \
+             /workdir/immortalwrt/target/linux/ramips/dts/mt7621_zte_e8820s.dts
+
+      - name: Update & install feeds
+        working-directory: /workdir/immortalwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Setup uci-defaults (gunanovo tailscale repo)
+        run: |
+          mkdir -p /workdir/immortalwrt/files/etc/uci-defaults
+          cat > /workdir/immortalwrt/files/etc/uci-defaults/99-tailscale-repo << 'EOF'
+          #!/bin/sh
+          wget -O /tmp/key-build.pub https://gunanovo.github.io/openwrt-tailscale/key-build.pub && \
+              opkg-key add /tmp/key-build.pub
+          grep -q "openwrt-tailscale" /etc/opkg/customfeeds.conf || \
+              echo "src/gz openwrt-tailscale https://gunanovo.github.io/openwrt-tailscale" >> /etc/opkg/customfeeds.conf
+          exit 0
+          EOF
+          chmod +x /workdir/immortalwrt/files/etc/uci-defaults/99-tailscale-repo
+
+      - name: Load .config
+        run: |
+          cp $GITHUB_WORKSPACE/config/e8820s.config /workdir/immortalwrt/.config
+
+      - name: Download packages
+        working-directory: /workdir/immortalwrt
+        run: |
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        id: compile
+        working-directory: /workdir/immortalwrt
+        run: |
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 || make -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "FILE_DATE=$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+      - name: Organize output files
+        id: organize
+        run: |
+          cd /workdir/immortalwrt/bin/targets/ramips/mt7621
+          rm -rf packages *.cdx.json *.manifest *.tar.zst
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload firmware as artifact
+        uses: actions/upload-artifact@main
+        if: steps.organize.outputs.status == 'success'
+        with:
+          name: ImmortalWrt_ZTE-E8820S_${{ github.event.inputs.tag_version }}_${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
+
+      - name: Upload firmware to release
+        uses: svenstaro/upload-release-action@v2
+        if: steps.compile.outputs.status == 'success'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ env.FIRMWARE }}/*
+          tag: ${{ github.event.inputs.tag_version }}_${{ env.FILE_DATE }}
+          file_glob: true
+          overwrite: true
