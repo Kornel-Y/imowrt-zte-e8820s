@@ -53,12 +53,6 @@ jobs:
           fi
           ln -sf /workdir/immortalwrt $GITHUB_WORKSPACE/immortalwrt
 
-      - name: Clone external packages
-        working-directory: /workdir/immortalwrt
-        run: |
-          git clone https://github.com/destan19/OpenAppFilter package/extra/openappfilter
-          git clone https://github.com/Tokisaki-Galaxy/luci-app-tailscale-community package/extra/luci-app-tailscale-community
-
       - name: Copy device tree
         run: |
           cp $GITHUB_WORKSPACE/patch/mt7621_zte_e8820s.dts \
@@ -69,19 +63,6 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: Setup uci-defaults (gunanovo tailscale repo)
-        run: |
-          mkdir -p /workdir/immortalwrt/files/etc/uci-defaults
-          cat > /workdir/immortalwrt/files/etc/uci-defaults/99-tailscale-repo << 'EOF'
-          #!/bin/sh
-          wget -O /tmp/key-build.pub https://gunanovo.github.io/openwrt-tailscale/key-build.pub && \
-              opkg-key add /tmp/key-build.pub
-          grep -q "openwrt-tailscale" /etc/opkg/customfeeds.conf || \
-              echo "src/gz openwrt-tailscale https://gunanovo.github.io/openwrt-tailscale" >> /etc/opkg/customfeeds.conf
-          exit 0
-          EOF
-          chmod +x /workdir/immortalwrt/files/etc/uci-defaults/99-tailscale-repo
 
       - name: Load .config
         run: |
